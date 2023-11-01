@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 
 from tqdm import tqdm
-from utils.utils import AverageMeter
+from utils.utils import AverageMeter, PairEnum
 from utils import ramps
 
 
@@ -23,7 +23,7 @@ class FirstTrainer(object):
 
     def train(self):
         if self.args.labeled_center > 0:
-            self.class_mean_old, self.class_sig_old, self.class_cov_old = self.generate_center()
+            self.class_mean, self.class_sig, self.class_cov = self.generate_center()
         else:
             self.class_mean, self.class_sig, self.class_cov = None, None, None
 
@@ -69,8 +69,121 @@ class FirstTrainer(object):
             else:
                 self.model.l2_classifier = False
 
+            # output_1 : labeled classifier result
+            # output_2 : unlabelled classifier result
+            # feat : feature
+            output_1, output_2, feat = self.model(x)
+            output_1_bar, output_2_bar, feat_bar = self.model(x_bar)
+
+            # use softmax to get the probability distribution for each head
+            prob_1, prob_1_bar = F.softmax(output_1, dim=1), F.softmax(output_1_bar, dim=1)
+            prob_2, prob_2_bar = F.softmax(output_2, dim=1), F.softmax(output_2_bar, dim=1)
+
+            # calculate rank statistics
+            rank_feat = (feat).detach()
+            rank_idx = torch.argsort(rank_feat, dim=1, descending=True)
+
+            rank_idx_1, rank_idx_2 = PairEnum(rank_idx)
+            rank_idx_1, rank_idx_2 = rank_idx_1[:, :self.args.topk], rank_idx_2[:, :self.args.topk]
+            rank_idx_1, _ = torch.sort(rank_idx_1, dim=1)
+            rank_idx_2, _ = torch.sort(rank_idx_2, dim=1)
+
+            rank_diff = rank_idx_1 - rank_idx_2
+            rank_diff = torch.sum(torch.abs(rank_diff), dim=1)
+
+            target_ulb = torch.ones_like(rank_diff).float().to(self.args.device)
+            target_ulb[rank_diff > 0] = -1
+
+            # get the probability distribution of the prediction for head-2
+            prob_1_ulb, _ = PairEnum(prob_2)
+            _, prob_2_ulb = PairEnum(prob_2_bar)
+
+            # get the pseudo label from head-2
+            label = (output_2).detach().max(1)[1] + self.args.num_labeled_classes
+
+            loss_ce_add = w * self.criterion_ce(output_1,
+                                                label) / self.args.rampup_coefficient * self.args.increment_coefficient
+            loss_bce = self.criterion_bce(prob_1_ulb, prob_2_ulb, target_ulb)
+            consistency_loss = F.mse_loss(prob_2, prob_2_bar)  # + F.mse_loss(prob1, prob1_bar)
+
+            # record the losses
+            loss_ce_add_record.update(loss_ce_add.item(), output_1.size(0))
+            loss_bce_record.update(loss_bce.item(), prob_1_ulb.size(0))
+            consistency_loss_record.update(consistency_loss.item(), prob_2.size(0))
+
+            if self.args.labeled_center > 0:
+                labeled_feats, labeled_labels = self.sample_labeled_features(self.class_mean, self.class_sig)
+
+                if self.args.distributed:
+                    labeled_output1 = self.model.module.forward_feat(labeled_feats)
+
+                else:
+                    labeled_output1 = self.model.forward_feat(labeled_feats)
+
+                loss_ce_la = self.args.lambda_proto * self.criterion_ce(labeled_output1, labeled_labels)
+
+            else:
+                loss_ce_la = 0
+
+            # w_kd is Lambda
+            if self.args.w_kd > 0:
+                _, _, old_feat = self.old_model(x)
+                size_1, size_2 = old_feat.size()
+
+                # eq.(11)
+                loss_kd = torch.dist(F.normalize(old_feat.view(size_1 * size_2, 1), dim=0),
+                                     F.normalize(feat.view(size_1 * size_2, 1), dim=0)) * self.args.w_kd
+
+            else:
+                loss_kd = torch.tensor(0.0)
+
+            # record losses
+            loss_kd_record.update(loss_kd.item(), x.size(0))
+
+            loss = loss_bce + loss_ce_add + w * consistency_loss + loss_ce_la + loss_kd
+
+            if self.args.labeled_center > 0 and isinstance(loss_ce_la, torch.Tensor):
+                loss_record.update(loss_ce_la.item(), x.size(0))
+
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+
+            errors = {
+                'Epoch': epoch,
+                'Total loss': loss_record.avg.item(),
+                'CE loss': loss_ce_add_record.avg.item(),
+                'BCE loss': loss_bce_record.avg.item(),
+                'MSE loss' : consistency_loss_record.avg.item(),
+                'KD loss' : loss_kd_record.avg.item()
+            }
+
+            tq_train.set_postfix(errors)
 
 
+    def sample_labeled_features(self, class_mean, class_sig):
+        feats = []
+        labels = []
+
+        if self.args.dataset_name == 'cifar10':
+            num_per_class = 20
+        elif self.args.dataset_name == 'cifar100':
+            num_per_class = 2
+        else:
+            num_per_class = 3
+
+        for i in range(self.args.num_labeled_classes):
+            dist = torch.distributions.Normal(class_mean[i], class_sig.mean(dim=0))
+            this_feat = dist.sample((num_per_class,)).cuda()  # new API
+            this_label = torch.ones(this_feat.size(0)).cuda() * i
+
+            feats.append(this_feat)
+            labels.append(this_label)
+
+        feats = torch.cat(feats, dim=0)
+        labels = torch.cat(labels, dim=0).long()
+
+        return feats, labels
 
     def generate_center(self):
         device = self.args.device
