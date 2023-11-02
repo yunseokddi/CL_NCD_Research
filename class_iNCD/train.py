@@ -8,6 +8,8 @@ import random
 import os
 import torch.nn as nn
 import copy
+import time
+import datetime
 
 from parse_config import CIFAR100_get_args_parser
 from tensorboard_logger import configure
@@ -97,11 +99,18 @@ def main(args):
         criterion_bce = BCE()  # BCE loss for unlabeled data
 
         first_trainer = FirstTrainer(args, model, model_without_ddp, old_model, labeled_train_loader, mix_train_loader,
+                                     labeled_test_loader,
+                                     unlabeled_val_loader,
+                                     all_test_loader,
                                      optimizer,
                                      scheduler, criterion_ce, criterion_bce)
 
+        start = time.time()
+
         first_trainer.train()
 
+        result_sec = time.time()- start
+        print("Total training time : {}".format(datetime.timedelta(seconds=result_sec)))
         print("finish")
 
 

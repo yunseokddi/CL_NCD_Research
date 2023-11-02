@@ -3,13 +3,16 @@ import torch.nn.functional as F
 import numpy as np
 
 from tqdm import tqdm
-from utils.utils import AverageMeter, PairEnum
+from utils.utils import AverageMeter, PairEnum, cluster_acc
 from utils import ramps
 from tensorboard_logger import log_value
+from sklearn.metrics.cluster import normalized_mutual_info_score as nmi_score
+from sklearn.metrics import adjusted_rand_score as ari_score
 
 
 class FirstTrainer(object):
-    def __init__(self, args, model, model_without_ddp, old_model, labeled_train_loader, mix_train_loader, optimizer,
+    def __init__(self, args, model, model_without_ddp, old_model, labeled_train_loader, mix_train_loader,
+                 labeled_eval_loader, unlabeled_eval_loader, all_eval_loader, optimizer,
                  scheduler,
                  criterion_ce, criterion_bce):
         self.args = args
@@ -22,6 +25,9 @@ class FirstTrainer(object):
         self.scheduler = scheduler
         self.criterion_ce = criterion_ce
         self.criterion_bce = criterion_bce
+        self.labeled_eval_loader = labeled_eval_loader
+        self.unlabeled_eval_loader = unlabeled_eval_loader
+        self.all_eval_loader = all_eval_loader
 
     def train(self):
         if self.args.labeled_center > 0:
@@ -31,6 +37,66 @@ class FirstTrainer(object):
 
         for epoch in range(self.args.epochs):
             self._train_epoch(epoch)
+
+            print("=" * 150)
+            print("\t\t\t\tFirst step test")
+            print("=" * 150)
+
+            acc_list = []
+
+            print('Head2: test on unlabeled classes')
+            self.args.head = 'head2'
+            _, ind = self._val_epoch(epoch, self.unlabeled_eval_loader, return_ind=True)
+
+            print('Evaluating on Head1')
+            self.args.head = 'head1'
+
+            print('test on labeled classes (test split)')
+            acc = self._val_epoch(epoch, self.labeled_eval_loader, cluster=False)
+            acc_list.append(acc)
+
+            print('test on unlabeled NEW-1 (test split)')
+            acc = self._val_epoch(epoch, self.unlabeled_eval_loader, cluster=False, ind=ind)
+            acc_list.append(acc)
+
+            print('test on unlabeled NEW1 (test split) w/ clustering')
+            acc = self._val_epoch(epoch, self.unlabeled_eval_loader, cluster=True)
+            acc_list.append(acc)
+
+            print('test on all classes w/o clustering (test split)')
+            acc = self._val_epoch(epoch, self.all_eval_loader, cluster=False, ind=ind)
+            acc_list.append(acc)
+
+            print('test on all classes w/ clustering (test split)')
+            acc = self._val_epoch(epoch, self.all_eval_loader, cluster=True)
+            acc_list.append(acc)
+
+            print('Evaluating on Head2')
+            self.args.head = 'head2'
+
+            print('test on unlabeled classes (train split)')
+            acc = self._val_epoch(epoch, self.unlabeled_eval_loader)
+            acc_list.append(acc)
+
+            print('test on unlabeled classes (test split)')
+            acc = self._val_epoch(epoch, self.unlabeled_eval_loader)
+            acc_list.append(acc)
+
+            # print(
+            #     'Acc List: Head1->Old, New-1_wo_cluster, New-1_w_cluster, All_wo_cluster, All_w_cluster, Head2->Train, Test')
+            # print(acc_list)
+
+            if self.args.tensorboard:
+                log_value('Head1->Old ACC', acc_list[0], epoch)
+                log_value('New-1_wo_cluster ACC', acc_list[1], epoch)
+                log_value('New-1_w_cluster ACC', acc_list[2], epoch)
+                log_value('All_wo_cluster ACC', acc_list[3], epoch)
+                log_value('All_w_cluster ACC', acc_list[4], epoch)
+                log_value('Head2->Train ACC', acc_list[5], epoch)
+                log_value('Test ACC', acc_list[6], epoch)
+
+        torch.save(self.model.state_dict(), self.args.model_dir)
+        print("model saved to {}.".format(self.args.model_dir))
 
     def _train_epoch(self, epoch):
         # create loss statistics recorder for each loss
@@ -47,9 +113,9 @@ class FirstTrainer(object):
         w = self.args.rampup_coefficient * ramps.sigmoid_rampup(epoch, self.args.rampup_length)
 
         for (x, x_bar), label, idx in tq_train:
-            x, x_bar, label = x.to(self.args.device, non_blocking=True), x_bar.to(self.args.device,
-                                                                                  non_blocking=True), label.to(
-                self.args.device, non_blocking=True)
+            x = x.to(self.args.device, non_blocking=True)
+            x_bar = x_bar.to(self.args.device, non_blocking=True)
+            label = label.to(self.args.device, non_blocking=True)
 
             mask_lb = label < self.args.num_labeled_classes
 
@@ -169,15 +235,96 @@ class FirstTrainer(object):
             log_value('MSE loss', consistency_loss_record.avg, epoch)
             log_value('KD loss', loss_kd_record.avg, epoch)
 
-
-    def _val_epoch(self, epoch):
-        self.model.eval(True)
+    def _val_epoch(self, epoch, test_loader, cluster=True, ind=None, return_ind=False):
+        self.model.eval()
 
         preds = np.array([])
         targets = np.array([])
 
+        tq_test = tqdm(test_loader, total=len(test_loader))
 
+        for x, label, _ in tq_test:
+            x = x.to(self.args.device, non_blocking=True)
+            label = label.to(self.args.device, non_blocking=True)
 
+            if self.args.step == 'first' or self.args.test_new == 'new1':
+                output_1, output_2, _ = self.model(x)
+
+                # head 1 : labeled dataset
+                if self.args.head == 'head1':
+                    output = output_1
+
+                else:
+                    output = output_2
+
+            else:
+                output_1, output_2, output_3, _ = self.model(x, output='test')
+
+                if self.args.head == 'head1':
+                    output = output_1
+
+                elif self.args.head == 'head2':
+                    output = output_2
+
+                elif self.args.head == 'head3':
+                    output = output_3
+
+                else:
+                    assert 'Check args head'
+                    output = None
+
+            _, pred = output.max(1)
+            targets = np.append(targets, label.cpu().numpy())
+            preds = np.append(preds, pred.cpu().numpy())
+
+        if cluster:
+            if return_ind:
+                acc, ind = cluster_acc(targets.astype(int), preds.astype(int), return_ind)
+
+            else:
+                acc = cluster_acc(targets.astype(int), preds.astype(int), return_ind)
+
+            nmi, ari = nmi_score(targets, preds), ari_score(targets, preds)
+
+            print('Epoch {}, Test acc {:.4f}, nmi {:.4f}, ari {:.4f}'.format(epoch, acc, nmi, ari))
+
+        else:
+            if ind is not None:
+                if self.args.step == 'first':
+                    ind = ind[:self.args.num_unlabeled_classes1, :]
+                    idx = np.argsort(ind[:, 1])
+                    id_map = ind[idx, 0]
+                    id_map += self.args.num_labeled_classes
+
+                    # targets_new = targets <-- this is not deep copy anymore due to NumPy version change
+                    targets_new = np.copy(targets)
+                    for i in range(self.args.num_unlabeled_classes1):
+                        targets_new[targets == i + self.args.num_labeled_classes] = id_map[i]
+                    targets = targets_new
+
+                else:
+                    ind = ind[:self.args.num_unlabeled_classes2, :]
+                    idx = np.argsort(ind[:, 1])
+                    id_map = ind[idx, 0]
+                    id_map += self.args.num_labeled_classes
+
+                    # targets_new = targets <-- this is not deep copy anymore due to NumPy version change
+                    targets_new = np.copy(targets)
+                    for i in range(self.args.num_unlabeled_classes2):
+                        targets_new[targets == i + self.args.num_labeled_classes] = id_map[i]
+                    targets = targets_new
+
+            preds = torch.from_numpy(preds)
+            targets = torch.from_numpy(targets)
+            correct = preds.eq(targets).float().sum(0)
+            acc = float(correct / targets.size(0))
+            print('Epoch {}, Test acc {:.4f}'.format(epoch, acc))
+
+        if return_ind:
+            return acc, ind
+
+        else:
+            return acc
 
     def sample_labeled_features(self, class_mean, class_sig):
         feats = []
