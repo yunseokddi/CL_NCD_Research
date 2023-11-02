@@ -60,7 +60,7 @@ class ResNet(nn.Module):
         out = F.relu(out, inplace=False)  # add ReLU to benifit ranking
         if self.l2_classifier:
             out1 = self.head1(F.normalize(out, dim=-1))
-            out1 = out1.clone() / 0.1
+            out1 = out1.clone().detach() / 0.1
         else:
             out1 = self.head1(out)
         out2 = self.head2(out)
@@ -116,7 +116,7 @@ class ResNetTri(nn.Module):
         out = F.relu(out, inplace=False)
         if self.l2_classifier:
             out1 = self.head1(F.normalize(out, dim=-1))
-            out1 = out1.clone() / 0.1
+            out1 = out1.clone().detach() / 0.1
         else:
             out1 = self.head1(out)
         out2 = self.head2(out)
@@ -149,10 +149,10 @@ class BasicBlock(nn.Module):
 
         if self.is_padding:
             shortcut = self.shortcut(x)
-            out = out.clone() + torch.cat([shortcut, torch.zeros(shortcut.shape).type(torch.cuda.FloatTensor)], 1)
+            out = out.clone().detach() + torch.cat([shortcut, torch.zeros(shortcut.shape).type(torch.cuda.FloatTensor)], 1)
             # out += torch.cat([shortcut,torch.zeros(shortcut.shape).type(torch.cuda.FloatTensor)],1)
         else:
-            out = out.clone() + self.shortcut(x)
+            out = out.clone().detach() + self.shortcut(x)
             # out += self.shortcut(x)
         out = F.relu(out, inplace=False)
         return out

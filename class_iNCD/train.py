@@ -71,7 +71,9 @@ def main(args):
         if args.w_kd > 0:
             old_model = copy.deepcopy(model)
             old_model = old_model.to(device)
-            old_model = torch.nn.parallel.DistributedDataParallel(old_model, device_ids=[args.gpu])
+
+            if args.distributed:
+                old_model = torch.nn.parallel.DistributedDataParallel(old_model, device_ids=[args.gpu])
             old_model.eval()
         else:
             old_model = None
@@ -86,7 +88,7 @@ def main(args):
         model_without_ddp = model
 
         if args.distributed:
-            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
             model_without_ddp = model.module
 
         optimizer = create_optimizer(args, model)

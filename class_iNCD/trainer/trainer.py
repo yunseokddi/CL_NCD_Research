@@ -1,9 +1,11 @@
 import torch
 import torch.nn.functional as F
+import numpy as np
 
 from tqdm import tqdm
 from utils.utils import AverageMeter, PairEnum
 from utils import ramps
+from tensorboard_logger import log_value
 
 
 class FirstTrainer(object):
@@ -151,14 +153,30 @@ class FirstTrainer(object):
 
             errors = {
                 'Epoch': epoch,
-                'Total loss': loss_record.avg.item(),
-                'CE loss': loss_ce_add_record.avg.item(),
-                'BCE loss': loss_bce_record.avg.item(),
-                'MSE loss' : consistency_loss_record.avg.item(),
-                'KD loss' : loss_kd_record.avg.item()
+                'Total loss': loss_record.avg,
+                'CE loss': loss_ce_add_record.avg,
+                'BCE loss': loss_bce_record.avg,
+                'MSE loss': consistency_loss_record.avg,
+                'KD loss': loss_kd_record.avg
             }
 
             tq_train.set_postfix(errors)
+
+        if self.args.tensorboard:
+            log_value('Train_loss', loss_record.avg, epoch)
+            log_value('CE loss', loss_ce_add_record.avg, epoch)
+            log_value('BCE loss', loss_bce_record.avg, epoch)
+            log_value('MSE loss', consistency_loss_record.avg, epoch)
+            log_value('KD loss', loss_kd_record.avg, epoch)
+
+
+    def _val_epoch(self, epoch):
+        self.model.eval(True)
+
+        preds = np.array([])
+        targets = np.array([])
+
+
 
 
     def sample_labeled_features(self, class_mean, class_sig):
