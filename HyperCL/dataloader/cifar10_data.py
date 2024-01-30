@@ -41,7 +41,7 @@ import tarfile
 import matplotlib.pyplot as plt
 from warnings import warn
 
-from data.dataset import Dataset
+from .dataset import Dataset
 
 class CIFAR10Data(Dataset):
     """An instance of the class shall represent the CIFAR-10 dataset.

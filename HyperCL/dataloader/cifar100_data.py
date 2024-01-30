@@ -43,8 +43,8 @@ import urllib.request
 import tarfile
 import matplotlib.pyplot as plt
 
-from data.dataset import Dataset
-from data.cifar10_data import CIFAR10Data
+from .dataset import Dataset
+from .cifar10_data import CIFAR10Data
 
 class CIFAR100Data(Dataset):
     """An instance of the class shall represent the CIFAR-100 dataset.

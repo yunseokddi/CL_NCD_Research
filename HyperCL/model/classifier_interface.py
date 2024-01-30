@@ -30,7 +30,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from warnings import warn
 
-from mnets.mnet_interface import MainNetInterface
+from .mnet_interface import MainNetInterface
 
 class Classifier(nn.Module, MainNetInterface):
     """A general interface for classification networks.

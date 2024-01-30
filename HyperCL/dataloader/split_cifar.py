@@ -30,8 +30,8 @@ for the Split-CIFAR10/CIFAR100 task.
 # corresponding `split_mnist` module.
 import numpy as np
 
-from data.cifar10_data import CIFAR10Data
-from data.cifar100_data import CIFAR100Data
+from .cifar10_data import CIFAR10Data
+from .cifar100_data import CIFAR100Data
 
 # DELETEME
 def get_split_CIFAR_handlers(data_path, use_one_hot=True, validation_size=0,
