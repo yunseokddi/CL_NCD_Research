@@ -17,6 +17,8 @@ def main(config, shared):
     mnet = get_main_model(config, shared, logger, device,
                                  no_weights=not config.mnet_only)
 
+    print(mnet)
+
 
 if __name__ == "__main__":
     experiment = 'resnet'

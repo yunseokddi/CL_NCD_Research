@@ -3,6 +3,7 @@ import torch
 from utils import misc
 from .resnet import ResNet
 from .mnet_interface import MainNetInterface
+from warnings import warn
 
 def get_main_model(config, shared, logger, device, no_weights=False):
     net_type = 'resnet'
@@ -90,6 +91,51 @@ def get_mnet_model(config, net_type, in_shape, out_shape, device, cprefix=None,
                   ).to(device)
 
     return mnet
+
+def get_hnet_model(config, mnet, logger, device):
+    logger.info('Creating hypernetwork ...')
+
+
+def build_hnet_model(config, num_tasks, device, mnet_shapes, cprefix=None):
+    if cprefix is None:
+        cprefix = ''
+
+    def gc(name):
+        """Get config value with that name."""
+        return getattr(config, '%s%s' % (cprefix, name))
+
+    hyper_chunks = misc.str_to_ints(gc('hyper_chunks'))
+    assert(len(hyper_chunks) in [1,2,3])
+    if len(hyper_chunks) == 1:
+        hyper_chunks = hyper_chunks[0]
+
+    hnet_arch = misc.str_to_ints(gc('hnet_arch'))
+    sa_hnet_filters = misc.str_to_ints(gc('sa_hnet_filters'))
+    sa_hnet_kernels = misc.str_to_ints(gc('sa_hnet_kernels'))
+    sa_hnet_attention_layers = misc.str_to_ints(gc('sa_hnet_attention_layers'))
+
+    hnet_act = misc.str_to_act(gc('hnet_act'))
+
+    if isinstance(hyper_chunks, list): # Chunked self-attention hypernet
+        if len(sa_hnet_kernels) == 1:
+            sa_hnet_kernels = sa_hnet_kernels[0]
+        # Note, that the user can specify the kernel size for each dimension and
+        # layer separately.
+        elif len(sa_hnet_kernels) > 2 and \
+            len(sa_hnet_kernels) == gc('sa_hnet_num_layers') * 2:
+            tmp = sa_hnet_kernels
+            sa_hnet_kernels = []
+            for i in range(0, len(tmp), 2):
+                sa_hnet_kernels.append([tmp[i], tmp[i+1]])
+
+        if gc('hnet_dropout_rate') != -1:
+            warn('SA-Hypernet doesn\'t use dropout. Dropout rate will be ' +
+                 'ignored.')
+        if gc('hnet_act') != 'relu':
+            warn('SA-Hypernet doesn\'t support the other non-linearities ' +
+                 'than ReLUs yet. Option "%shnet_act" (%s) will be ignored.'
+                 % (cprefix, gc('hnet_act')))
+
 
 def init_network_weights(all_params, config, logger, chunk_embs=None,
                          task_embs=None, net=None):
